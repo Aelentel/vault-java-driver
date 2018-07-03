@@ -180,6 +180,95 @@ public class Logical {
             }
         }
     }
+    
+    /**
+     * <p>Basic operation to store secrets.  Multiple name value pairs can be stored under the same secret key.
+     * E.g.:</p>
+     *
+     * <blockquote>
+     * <pre>{@code
+     * final Map<String, String> nameValuePairs = new HashMap<String, Object>();
+     * nameValuePairs.put("value", "foo");
+     * nameValuePairs.put("other_value", "bar");
+     *
+     * final LogicalResponse response = vault.logical().write("secret/hello", nameValuePairs);
+     * }</pre>
+     * </blockquote>
+     *
+     * <p>The values in these name-value pairs may be booleans, numerics, strings, or nested JSON objects.  However,
+     * be aware that this method does not recursively parse any nested structures.  If you wish to write arbitrary
+     * JSON objects to Vault... then you should parse them to JSON outside of this method, and pass them here as JSON
+     * strings.</p>
+     *
+     * @param path The Vault key value to which to write (e.g. <code>secret/hello</code>)
+     * @param nameValuePairs Secret name and value pairs to store under this Vault key (can be <code>null</code> for writing to keys that do not need or expect any fields to be specified)
+     * @return The response information received from Vault
+     * @throws VaultException If any errors occurs with the REST request, and the maximum number of retries is exceeded.
+     */
+    public LogicalResponse writePut(final String path, final Map<String, Object> nameValuePairs) throws VaultException {
+        int retryCount = 0;
+        while (true) {
+            try {
+                JsonObject requestJson = Json.object();
+                if (nameValuePairs != null) {
+                    for (final Map.Entry<String, Object> pair : nameValuePairs.entrySet()) {
+                        final Object value = pair.getValue();
+                        if (value == null) {
+                            requestJson = requestJson.add(pair.getKey(), (String) null);
+                        } else if (value instanceof Boolean) {
+                            requestJson = requestJson.add(pair.getKey(), (Boolean) pair.getValue());
+                        } else if (value instanceof Integer) {
+                            requestJson = requestJson.add(pair.getKey(), (Integer) pair.getValue());
+                        } else if (value instanceof Long) {
+                            requestJson = requestJson.add(pair.getKey(), (Long) pair.getValue());
+                        } else if (value instanceof Float) {
+                            requestJson = requestJson.add(pair.getKey(), (Float) pair.getValue());
+                        } else if (value instanceof Double) {
+                            requestJson = requestJson.add(pair.getKey(), (Double) pair.getValue());
+                        } else {
+                            requestJson = requestJson.add(pair.getKey(), pair.getValue().toString());
+                        }
+                    }
+                }
+
+                final RestResponse restResponse = new Rest()//NOPMD
+                        .url(config.getAddress() + "/v1/" + path)
+                        .body(requestJson.toString().getBytes("UTF-8"))
+                        .header("X-Vault-Token", config.getToken())
+                        .connectTimeoutSeconds(config.getOpenTimeout())
+                        .readTimeoutSeconds(config.getReadTimeout())
+                        .sslVerification(config.getSslConfig().isVerify())
+                        .sslContext(config.getSslConfig().getSslContext())
+                        .put();
+
+                // HTTP Status should be either 200 (with content - e.g. PKI write) or 204 (no content)
+                final int restStatus = restResponse.getStatus();
+                if (restStatus == 200 || restStatus == 204) {
+                    return new LogicalResponse(restResponse, retryCount);
+                } else {
+                    throw new VaultException("Expecting HTTP status 204 or 200, but instead receiving " + restStatus
+                            + "\nResponse body: " + new String(restResponse.getBody(), "UTF-8"), restStatus);
+                }
+            } catch (Exception e) {
+                // If there are retries to perform, then pause for the configured interval and then execute the loop again...
+                if (retryCount < config.getMaxRetries()) {
+                    retryCount++;
+                    try {
+                        final int retryIntervalMilliseconds = config.getRetryIntervalMilliseconds();
+                        Thread.sleep(retryIntervalMilliseconds);
+                    } catch (InterruptedException e1) {
+                        e1.printStackTrace();
+                    }
+                } else if (e instanceof VaultException) {
+                    // ... otherwise, give up.
+                    throw (VaultException) e;
+                } else {
+                    throw new VaultException(e);
+                }
+            }
+        }
+    }
+
 
     /**
      * <p>Retrieve a list of keys corresponding to key/value pairs at a given Vault path.</p>
